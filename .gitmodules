@@ -1,0 +1,24 @@
+[submodule "ttm-telematics-linux-telematics-apps-na"]
+	path = ttm-telematics-linux-telematics-apps-na
+	url = git@github.com:PeopleNet/ttm-telematics-linux-telematics-apps-na.git
+[submodule "vehicle-telematics-platform"]
+	path = vehicle-telematics-platform
+	url = git@github.com:PeopleNet/vehicle-telematics-platform.git
+[submodule "ttm-telematics-core-vtp"]
+	path = ttm-telematics-core-vtp
+	url = git@github.com:PeopleNet/ttm-telematics-core-vtp.git
+[submodule "psvi-device-settings"]
+	path = psvi-device-settings
+	url = git@github.com:PeopleNet/psvi-device-settings.git
+[submodule "embedded_test_automation"]
+	path = embedded_test_automation
+	url = git@github.com:PeopleNet/embedded_test_automation.git
+[submodule "can_scripts"]
+	path = can_scripts
+	url = git@github.com:PeopleNet/can_scripts.git
+[submodule "psvi-analytics"]
+	path = psvi-analytics
+	url = git@github.com:PeopleNet/psvi-analytics.git
+[submodule "utils"]
+	path = utils
+	url = git@github.com:emanuel036/utils.git
