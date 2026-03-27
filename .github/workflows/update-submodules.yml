@@ -1,0 +1,185 @@
+name: Update Submodules and Sync VTP SDK
+
+on:
+  schedule:
+    # Run daily at 10 PM UTC (22:00)
+    - cron: '0 22 * * *'
+  workflow_dispatch:  # Allow manual trigger
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-submodules:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          token: ${{ secrets.EMANUEL_SECRET }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Configure git to use HTTPS with token instead of SSH for submodules
+          git config --global url."https://oauth2:${{ secrets.EMANUEL_SECRET }}@github.com/".insteadOf "git@github.com:"
+          git config --global url."https://oauth2:${{ secrets.EMANUEL_SECRET }}@github.com/".insteadOf "ssh://git@github.com/"
+
+      - name: Get current VTP SDK version (before update)
+        id: old-version
+        run: |
+          VERSION=$(grep -oP 'VTP_SDK_VERSION=\K[\d.]+' ttm-telematics-linux-telematics-apps-na/configs/environment/env_configs || echo "")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Current VTP_SDK_VERSION: $VERSION"
+
+      - name: Update all submodules to their configured branches
+        run: |
+          git submodule update --remote --merge
+
+      - name: Get new VTP SDK version (after update)
+        id: new-version
+        run: |
+          VERSION=$(grep -oP 'VTP_SDK_VERSION=\K[\d.]+' ttm-telematics-linux-telematics-apps-na/configs/environment/env_configs || echo "")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "New VTP_SDK_VERSION: $VERSION"
+
+      - name: Update vehicle-telematics-platform to VTP SDK tag
+        id: vtp-update
+        run: |
+          OLD_VERSION="${{ steps.old-version.outputs.version }}"
+          NEW_VERSION="${{ steps.new-version.outputs.version }}"
+
+          if [ -z "$NEW_VERSION" ]; then
+            echo "Error: Could not parse VTP_SDK_VERSION from env_configs"
+            exit 1
+          fi
+
+          TAG_NAME="vtp_v${NEW_VERSION}"
+          echo "Target tag: $TAG_NAME"
+          echo "tag_missing=false" >> $GITHUB_OUTPUT
+
+          # Check if version changed
+          if [ "$OLD_VERSION" != "$NEW_VERSION" ]; then
+            echo "VTP_SDK_VERSION changed from $OLD_VERSION to $NEW_VERSION"
+
+            # Navigate to vehicle-telematics-platform submodule
+            cd vehicle-telematics-platform
+
+            # Verify tag exists
+            if ! git tag -l "$TAG_NAME" | grep -q "^${TAG_NAME}$"; then
+              echo "Warning: Tag $TAG_NAME does not exist in vehicle-telematics-platform"
+              echo "Will create PR requesting tag creation"
+              echo "tag_missing=true" >> $GITHUB_OUTPUT
+              cd ..
+            else
+              # Checkout the tag
+              git checkout "tags/$TAG_NAME"
+              echo "Checked out $TAG_NAME"
+              echo "changed=true" >> $GITHUB_OUTPUT
+              cd ..
+            fi
+          else
+            echo "VTP_SDK_VERSION unchanged ($NEW_VERSION), vehicle-telematics-platform not updated"
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check for submodule changes
+        id: check-changes
+        run: |
+          if git diff --quiet HEAD; then
+            echo "No submodule changes detected"
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          else
+            echo "Submodule changes detected"
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit directly to main (if VTP tag exists or unchanged)
+        if: steps.check-changes.outputs.has_changes == 'true' && steps.vtp-update.outputs.tag_missing != 'true'
+        run: |
+          NEW_VERSION="${{ steps.new-version.outputs.version }}"
+          VTP_CHANGED="${{ steps.vtp-update.outputs.changed }}"
+
+          # Add all changes
+          git add .
+
+          # Create commit message
+          if [ "$VTP_CHANGED" = "true" ]; then
+            COMMIT_MSG="chore: update submodules (ttm develop, core-vtp develop, vtp v${NEW_VERSION})"
+          else
+            COMMIT_MSG="chore: update submodules to latest branches"
+          fi
+
+          git commit -m "$COMMIT_MSG" -m "Co-Authored-By: GitHub Actions <github-actions[bot]@users.noreply.github.com>"
+
+          # Push directly to current branch
+          git push origin HEAD
+
+          echo "✅ Submodules updated and committed directly to $(git branch --show-current)"
+
+      - name: Create PR (if VTP tag is missing)
+        if: steps.check-changes.outputs.has_changes == 'true' && steps.vtp-update.outputs.tag_missing == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+          BRANCH_NAME="update-submodules-vtp-tag-missing-${TIMESTAMP}"
+          NEW_VERSION="${{ steps.new-version.outputs.version }}"
+
+          # Create and checkout new branch
+          git checkout -b "$BRANCH_NAME"
+
+          # Add and commit changes
+          git add .
+
+          COMMIT_MSG="chore: update submodules - VTP tag vtp_v${NEW_VERSION} missing"
+
+          git commit -m "$COMMIT_MSG" -m "Co-Authored-By: GitHub Actions <github-actions[bot]@users.noreply.github.com>"
+
+          # Push branch
+          git push origin "$BRANCH_NAME"
+
+          # Create PR body
+          PR_BODY="## ⚠️ VTP SDK Tag Missing"
+          PR_BODY="${PR_BODY}\n\nThis PR updates submodules, but **vehicle-telematics-platform tag is missing** and needs to be created."
+          PR_BODY="${PR_BODY}\n\n### Action Required:"
+          PR_BODY="${PR_BODY}\n1. Create tag \`vtp_v${NEW_VERSION}\` in the [vehicle-telematics-platform](https://github.com/PeopleNet/vehicle-telematics-platform) repository"
+          PR_BODY="${PR_BODY}\n2. After creating the tag, manually update the submodule:"
+          PR_BODY="${PR_BODY}\n   \`\`\`bash\n   cd vehicle-telematics-platform"
+          PR_BODY="${PR_BODY}\n   git fetch --tags"
+          PR_BODY="${PR_BODY}\n   git checkout tags/vtp_v${NEW_VERSION}"
+          PR_BODY="${PR_BODY}\n   cd .."
+          PR_BODY="${PR_BODY}\n   git add vehicle-telematics-platform"
+          PR_BODY="${PR_BODY}\n   git commit -m \"chore: update vehicle-telematics-platform to vtp v${NEW_VERSION}\""
+          PR_BODY="${PR_BODY}\n   \`\`\`"
+          PR_BODY="${PR_BODY}\n3. Merge this PR"
+          PR_BODY="${PR_BODY}\n\n### Changes in this PR:"
+          PR_BODY="${PR_BODY}\n- **ttm-telematics-linux-telematics-apps-na**: Updated to latest develop"
+          PR_BODY="${PR_BODY}\n- **ttm-telematics-core-vtp**: Updated to latest develop"
+          PR_BODY="${PR_BODY}\n- **Other submodules**: Updated to latest main"
+          PR_BODY="${PR_BODY}\n- **vehicle-telematics-platform**: ❌ NOT updated (tag \`vtp_v${NEW_VERSION}\` does not exist)"
+          PR_BODY="${PR_BODY}\n\n### VTP SDK Version"
+          PR_BODY="${PR_BODY}\n- VTP_SDK_VERSION in env_configs: **${NEW_VERSION}**"
+          PR_BODY="${PR_BODY}\n- Required tag: **vtp_v${NEW_VERSION}** (missing)"
+          PR_BODY="${PR_BODY}\n\n🤖 Generated by [GitHub Actions](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+
+          # Create PR
+          echo -e "$PR_BODY" | gh pr create \
+            --title "$COMMIT_MSG" \
+            --base main \
+            --head "$BRANCH_NAME" \
+            --body-file -
+
+          echo "⚠️ PR created - VTP tag vtp_v${NEW_VERSION} needs to be created manually"
+
+      - name: Summary
+        if: steps.check-changes.outputs.has_changes == 'false'
+        run: |
+          echo "✅ All submodules are already up to date"
+          echo "VTP_SDK_VERSION: ${{ steps.new-version.outputs.version }}"
